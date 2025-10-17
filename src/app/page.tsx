@@ -78,17 +78,6 @@ function App() {
   // Music store
   const { addToQueue, queue } = useMusicStore();
 
-  // Track if we've loaded tracks to prevent infinite loops
-  const loadedTracksRef = useRef<string>("");
-
-  // Stable reference to addToQueue
-  const stableAddToQueue = useCallback(
-    (tracks: typeof queue) => {
-      addToQueue(tracks);
-    },
-    [addToQueue]
-  );
-
   // Hooks
   const { like, tip } = useBasedBeatsWrite();
   const { transfer } = useUSDCWrite();
@@ -99,7 +88,9 @@ function App() {
     100n,
     true
   );
-  const trackIds = allTracksData?.[0] || [];
+
+  // Memoize track IDs to prevent unnecessary re-renders
+  const trackIds = useMemo(() => allTracksData?.[0] || [], [allTracksData]);
 
   // Get track details
   const { data: tracksDetails, refetch: refetchTrackDetails } =
@@ -139,19 +130,16 @@ function App() {
     },
   });
 
-  // Load tracks from contract
+  // Load tracks from contract - using a stable approach
+  const [isLoadingTracks, setIsLoadingTracks] = useState(false);
+
   useEffect(() => {
     const loadTracks = async () => {
-      if (!tracksDetails || tracksDetails.length === 0) {
-        stableAddToQueue([]);
+      if (!tracksDetails || tracksDetails.length === 0 || isLoadingTracks) {
         return;
       }
 
-      // Create a unique key for this set of tracks to prevent duplicate loading
-      const tracksKey = trackIds.join(",");
-      if (loadedTracksRef.current === tracksKey) {
-        return; // Already loaded these tracks
-      }
+      setIsLoadingTracks(true);
 
       try {
         // Filter only existing tracks
@@ -224,16 +212,17 @@ function App() {
         );
 
         const loadedTracks = await Promise.all(trackPromises);
-        loadedTracksRef.current = tracksKey; // Mark as loaded
-        stableAddToQueue(loadedTracks);
+        addToQueue(loadedTracks);
       } catch (error) {
         console.error("Failed to load tracks:", error);
         toast.error("Failed to load tracks from contract");
+      } finally {
+        setIsLoadingTracks(false);
       }
     };
 
     loadTracks();
-  }, [tracksDetails, trackIds, stableAddToQueue]);
+  }, [tracksDetails, trackIds]);
 
   // Handlers
   const handleLike = useCallback(
