@@ -1,38 +1,49 @@
 "use client";
 
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   useAccount,
   useConnect,
   useDisconnect,
   useBalance,
-  useWaitForTransactionReceipt,
-  useSendTransaction,
   useConnections,
 } from "wagmi";
-import Posts from "../components/posts";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { useState, useCallback, useEffect, useMemo } from "react";
-import { parseUnits, isAddress, encodeFunctionData } from "viem";
+import { parseUnits, formatUnits } from "viem";
 import { toast } from "sonner";
-import { USDC, erc20Abi } from "@/lib/usdc";
+import { USDC } from "@/lib/usdc";
+import { BasedBeats } from "@/lib/basedbeats";
 import { useFaucet } from "@/hooks/useFaucet";
 import { useFaucetEligibility } from "@/hooks/useFaucetEligibility";
+import {
+  useBasedBeatsWrite,
+  useGetAllTracks,
+  useGetTracksBatch,
+  useHasLiked,
+} from "@/hooks/useBasedBeats";
+import { useBalanceOf } from "@/hooks/useUSDC";
+import { useBatchTransaction } from "@/hooks/useTransactions";
+import { useUSDCWrite } from "@/hooks/useUSDC";
+import { useMusicStore, type Track } from "@/stores/useMusicStore";
+import { MusicPlayer } from "@/components/MusicPlayer";
+import { TrackList } from "@/components/TrackList";
+import { Music, Wallet, LogOut } from "lucide-react";
+import Image from "next/image";
 
 function App() {
   const account = useAccount();
   const { connectors, connect } = useConnect();
   const { disconnect } = useDisconnect();
   const connections = useConnections();
+
   const [_subAccount, universalAccount] = useMemo(() => {
     return connections.flatMap((connection) => connection.accounts);
   }, [connections]);
@@ -47,80 +58,247 @@ function App() {
     },
   });
 
-  // Check faucet eligibility based on balance
+  // Get USDC balance
+  const { data: usdcBalance } = useBalanceOf(
+    universalAccount!,
+    !!universalAccount
+  );
+
+  // Check faucet eligibility
   const faucetEligibility = useFaucetEligibility(universalBalance?.value);
-
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [toAddress, setToAddress] = useState("");
-  const [amount, setAmount] = useState("");
-  const [toastId, setToastId] = useState<string | number | null>(null);
-
   const faucetMutation = useFaucet();
 
-  const {
-    sendTransaction,
-    data: hash,
-    isPending: isTransactionPending,
-    reset: resetTransaction,
-  } = useSendTransaction();
+  // Dialog state
+  const [isTipDialogOpen, setIsTipDialogOpen] = useState(false);
+  const [selectedTrackForTip, setSelectedTrackForTip] = useState<string | null>(
+    null
+  );
+  const [tipAmount, setTipAmount] = useState("1");
 
-  const { isLoading: isConfirming, isSuccess: isConfirmed } =
-    useWaitForTransactionReceipt({
-      hash,
-    });
+  // Music store
+  const { addToQueue, queue } = useMusicStore();
 
-  const handleSend = useCallback(async () => {
-    if (!amount || !isAddress(toAddress)) {
-      toast.error("Invalid input", {
-        description: "Please enter a valid address and amount",
+  // Track if we've loaded tracks to prevent infinite loops
+  const loadedTracksRef = useRef<string>("");
+
+  // Stable reference to addToQueue
+  const stableAddToQueue = useCallback(
+    (tracks: typeof queue) => {
+      addToQueue(tracks);
+    },
+    [addToQueue]
+  );
+
+  // Hooks
+  const { like, tip } = useBasedBeatsWrite();
+  const { transfer } = useUSDCWrite();
+
+  // Get all tracks from contract
+  const { data: allTracksData, refetch: refetchTracks } = useGetAllTracks(
+    0n,
+    100n,
+    true
+  );
+  const trackIds = allTracksData?.[0] || [];
+
+  // Get track details
+  const { data: tracksDetails, refetch: refetchTrackDetails } =
+    useGetTracksBatch(trackIds as bigint[], trackIds.length > 0);
+
+  // Transaction hooks
+  const likeTx = useBatchTransaction({
+    onSuccess: () => {
+      toast.success("Track liked!", {
+        description: "Your like has been recorded on-chain",
       });
+      refetchTracks();
+      refetchTrackDetails();
+    },
+    onError: (error) => {
+      toast.error("Failed to like track", {
+        description: error.message,
+      });
+    },
+  });
+
+  const tipTx = useBatchTransaction({
+    onSuccess: () => {
+      toast.success("Tip sent!", {
+        description: `Successfully sent ${tipAmount} USDC to the artist`,
+      });
+      setIsTipDialogOpen(false);
+      setSelectedTrackForTip(null);
+      setTipAmount("1");
+      refetchTracks();
+      refetchTrackDetails();
+    },
+    onError: (error) => {
+      toast.error("Failed to send tip", {
+        description: error.message,
+      });
+    },
+  });
+
+  // Load tracks from contract
+  useEffect(() => {
+    const loadTracks = async () => {
+      if (!tracksDetails || tracksDetails.length === 0) {
+        stableAddToQueue([]);
+        return;
+      }
+
+      // Create a unique key for this set of tracks to prevent duplicate loading
+      const tracksKey = trackIds.join(",");
+      if (loadedTracksRef.current === tracksKey) {
+        return; // Already loaded these tracks
+      }
+
+      try {
+        // Filter only existing tracks
+        const existingTracks = tracksDetails.filter((track) => track.exists);
+
+        // Fetch metadata for each track from CID
+        const trackPromises = existingTracks.map(
+          async (onChainTrack, index) => {
+            try {
+              // Determine the metadata URL based on CID format
+              let metadataUrl: string;
+
+              if (onChainTrack.metadataCid.startsWith("ipfs://")) {
+                // IPFS URL - convert to HTTP gateway
+                metadataUrl = onChainTrack.metadataCid.replace(
+                  "ipfs://",
+                  "https://ipfs.io/ipfs/"
+                );
+              } else if (
+                onChainTrack.metadataCid.startsWith("http://") ||
+                onChainTrack.metadataCid.startsWith("https://")
+              ) {
+                // Already a full URL - use as is
+                metadataUrl = onChainTrack.metadataCid;
+              } else if (onChainTrack.metadataCid.startsWith("/")) {
+                // Absolute path - use as is
+                metadataUrl = onChainTrack.metadataCid;
+              } else {
+                // Relative path - prepend /tracks/
+                metadataUrl = `/tracks/${onChainTrack.metadataCid}`;
+              }
+
+              const response = await fetch(metadataUrl);
+              const metadata = await response.json();
+
+              return {
+                id: trackIds[tracksDetails.indexOf(onChainTrack)].toString(),
+                title: metadata.title || "Unknown Track",
+                artist: metadata.artist || "Unknown Artist",
+                album: metadata.album || "Unknown Album",
+                albumArt: metadata.albumArt || "",
+                duration: metadata.duration || 0,
+                explicit: metadata.explicit || false,
+                audioUrl: metadata.audioUrl || "",
+                likes: Number(onChainTrack.likes),
+                creator: onChainTrack.creator,
+                metadataCid: onChainTrack.metadataCid,
+              };
+            } catch (error) {
+              console.error(
+                `Failed to load metadata for track ${index}:`,
+                error
+              );
+              // Return a placeholder track if metadata fails to load
+              return {
+                id: trackIds[tracksDetails.indexOf(onChainTrack)].toString(),
+                title: "Unknown Track",
+                artist: "Unknown Artist",
+                album: "Unknown Album",
+                albumArt: "",
+                duration: 0,
+                explicit: false,
+                audioUrl: "",
+                likes: Number(onChainTrack.likes),
+                creator: onChainTrack.creator,
+                metadataCid: onChainTrack.metadataCid,
+              };
+            }
+          }
+        );
+
+        const loadedTracks = await Promise.all(trackPromises);
+        loadedTracksRef.current = tracksKey; // Mark as loaded
+        stableAddToQueue(loadedTracks);
+      } catch (error) {
+        console.error("Failed to load tracks:", error);
+        toast.error("Failed to load tracks from contract");
+      }
+    };
+
+    loadTracks();
+  }, [tracksDetails, trackIds, stableAddToQueue]);
+
+  // Handlers
+  const handleLike = useCallback(
+    (trackId: string) => {
+      if (!universalAccount) {
+        toast.error("Please connect your wallet first");
+        return;
+      }
+
+      const trackIdBigInt = BigInt(trackId);
+      const transferAmount = parseUnits("0.001", USDC.decimals);
+
+      // Batch: Transfer USDC + Like track
+      likeTx.send([
+        {
+          to: USDC.address,
+          data: transfer(BasedBeats.address, transferAmount),
+          value: 0n,
+        },
+        {
+          to: BasedBeats.address,
+          data: like(trackIdBigInt),
+          value: 0n,
+        },
+      ]);
+    },
+    [universalAccount, likeTx, transfer, like]
+  );
+
+  const handleTip = useCallback(
+    (trackId: string) => {
+      if (!universalAccount) {
+        toast.error("Please connect your wallet first");
+        return;
+      }
+
+      setSelectedTrackForTip(trackId);
+      setIsTipDialogOpen(true);
+    },
+    [universalAccount]
+  );
+
+  const handleTipSubmit = useCallback(() => {
+    if (!selectedTrackForTip || !tipAmount) {
+      toast.error("Please enter a tip amount");
       return;
     }
 
-    try {
-      const data = encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "transfer",
-        args: [toAddress as `0x${string}`, parseUnits(amount, USDC.decimals)],
-      });
+    const trackId = BigInt(selectedTrackForTip);
+    const tipAmountWei = parseUnits(tipAmount, USDC.decimals);
 
-      sendTransaction({
+    // Batch: Transfer USDC + Tip
+    tipTx.send([
+      {
         to: USDC.address,
-        data,
+        data: transfer(BasedBeats.address, tipAmountWei),
         value: 0n,
-      });
-
-      const toastId_ = toast("Sending USDC...", {
-        description: `Sending ${amount} USDC to ${toAddress}`,
-        duration: Infinity,
-      });
-
-      setToastId(toastId_);
-      setIsDialogOpen(false);
-      setAmount("");
-      setToAddress("");
-    } catch (_error) {
-      toast.error("Transaction failed", {
-        description: "Please try again",
-      });
-    }
-  }, [amount, toAddress, sendTransaction]);
-
-  useEffect(() => {
-    if (isConfirmed && toastId !== null) {
-      toast.success("Transaction successful!", {
-        description: `Sent ${amount} USDC to ${toAddress}`,
-        duration: 2000,
-      });
-
-      setTimeout(() => {
-        toast.dismiss(toastId);
-      }, 0);
-
-      setToastId(null);
-      resetTransaction();
-    }
-  }, [isConfirmed, toastId, amount, toAddress, resetTransaction]);
+      },
+      {
+        to: BasedBeats.address,
+        data: tip(trackId),
+        value: 0n,
+      },
+    ]);
+  }, [selectedTrackForTip, tipAmount, tipTx, transfer, tip]);
 
   const handleFundAccount = useCallback(async () => {
     if (!universalAccount) {
@@ -176,123 +354,51 @@ function App() {
   }, [universalAccount, faucetMutation, faucetEligibility]);
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between px-4 pb-4 md:pb-8 md:px-8">
-      <div className="w-full max-w-2xl mx-auto">
-        <nav className="flex justify-between items-center sticky top-0 bg-background z-10 py-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">Feed</h1>
-            <a
-              href="https://github.com/stephancill/sub-accounts-fc-demo"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors underline"
-            >
-              Github
-            </a>
+    <div className="min-h-screen bg-background pb-32">
+      {/* Header */}
+      <header className="sticky top-0 z-40 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="container flex h-16 items-center justify-between px-4">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center justify-center w-10 h-10 rounded-full bg-[#0088ff] text-primary-foreground">
+              {/* <Music className="w-5 h-5" /> */}
+              <Image
+                src="/logo.svg"
+                alt="Based Beats"
+                width={100}
+                height={100}
+              />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">BasedBeats</h1>
+              <p className="text-xs text-muted-foreground">
+                Onchain Music Streaming
+              </p>
+            </div>
           </div>
+
           {account.status === "connected" ? (
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <div className="flex flex-col items-end gap-0.5">
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:flex flex-col items-end gap-0.5 text-xs">
                 <button
                   type="button"
-                  className="text-xs text-muted-foreground cursor-pointer hover:opacity-80"
+                  className="text-muted-foreground hover:text-foreground transition-colors font-mono"
                   onClick={() => {
                     navigator.clipboard.writeText(universalAccount || "");
+                    toast.success("Address copied!");
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      navigator.clipboard.writeText(universalAccount || "");
-                    }
-                  }}
-                  aria-label="Click to copy universal account address"
-                  title="Click to copy universal account address"
+                  title="Click to copy address"
                 >
-                  Universal: {universalAccount?.slice(0, 6)}...
+                  {universalAccount?.slice(0, 6)}...
                   {universalAccount?.slice(-4)}
                 </button>
-                <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-                  <DialogTrigger asChild>
-                    <span className="text-xs text-muted-foreground cursor-pointer hover:opacity-80">
-                      ({universalBalance?.formatted.slice(0, 6)}{" "}
-                      {universalBalance?.symbol})
-                    </span>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Send USDC</DialogTitle>
-                      <DialogDescription>
-                        Enter the recipient address and amount to send
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div className="p-4 rounded-lg bg-muted">
-                        <div className="text-sm text-muted-foreground">
-                          Universal Account Balance
-                        </div>
-                        <div className="text-xl font-medium">
-                          {universalBalance
-                            ? `${universalBalance.formatted} ${universalBalance.symbol}`
-                            : "Loading..."}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-2">
-                          {universalAccount?.slice(0, 10)}...
-                          {universalAccount?.slice(-8)}
-                        </div>
-                        <Button
-                          variant="link"
-                          size="sm"
-                          onClick={handleFundAccount}
-                          disabled={
-                            faucetMutation.isPending ||
-                            !faucetEligibility.isEligible
-                          }
-                          className="h-auto p-0 text-xs mt-1"
-                          title={
-                            !faucetEligibility.isEligible
-                              ? faucetEligibility.reason
-                              : undefined
-                          }
-                        >
-                          {faucetMutation.isPending
-                            ? "Funding..."
-                            : faucetEligibility.isEligible
-                              ? "Get USDC on Base Sepolia"
-                              : "Sufficient Balance"}
-                        </Button>
-                      </div>
-                      <Input
-                        placeholder="Recipient Address (0x...)"
-                        value={toAddress}
-                        onChange={(e) => setToAddress(e.target.value)}
-                      />
-                      <Input
-                        type="number"
-                        placeholder="Amount in USDC"
-                        step="0.01"
-                        min="0"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                      />
-                    </div>
-                    <DialogFooter>
-                      <Button
-                        onClick={handleSend}
-                        disabled={
-                          !amount ||
-                          !toAddress ||
-                          isConfirming ||
-                          isTransactionPending
-                        }
-                      >
-                        Send USDC
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                <span className="font-semibold">
+                  {universalBalance?.formatted.slice(0, 8)}{" "}
+                  {universalBalance?.symbol}
+                </span>
               </div>
 
               <Button
-                variant="default"
+                variant="outline"
                 onClick={handleFundAccount}
                 size="sm"
                 disabled={
@@ -301,14 +407,15 @@ function App() {
                 title={
                   !faucetEligibility.isEligible
                     ? faucetEligibility.reason
-                    : undefined
+                    : "Get test USDC"
                 }
               >
-                {faucetMutation.isPending ? "Funding..." : "Fund Account"}
+                <Wallet className="w-4 h-4 mr-2" />
+                {faucetMutation.isPending ? "Funding..." : "Fund"}
               </Button>
 
-              <Button variant="outline" onClick={() => disconnect()} size="sm">
-                Disconnect
+              <Button variant="ghost" onClick={() => disconnect()} size="sm">
+                <LogOut className="w-4 h-4" />
               </Button>
             </div>
           ) : (
@@ -319,16 +426,123 @@ function App() {
                   onClick={() => connect({ connector })}
                   size="sm"
                 >
+                  <Wallet className="w-4 h-4 mr-2" />
                   {connector.name}
                 </Button>
               ))}
             </div>
           )}
-        </nav>
+        </div>
+      </header>
 
-        <Posts onTipSuccess={() => {}} />
-      </div>
-    </main>
+      {/* Main content */}
+      <main className="container px-4 py-8">
+        <div className="max-w-4xl mx-auto">
+          {/* Welcome section */}
+          {account.status !== "connected" && (
+            <div className="mb-8 p-8 rounded-xl border bg-card text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center">
+                <Music className="w-8 h-8 text-primary" />
+              </div>
+              <h2 className="text-2xl font-bold mb-2">Welcome to BasedBeats</h2>
+              <p className="text-muted-foreground mb-6">
+                Stream music onchain with seamless Web3 integration.
+                <br />
+                Connect your wallet to start listening.
+              </p>
+              {connectors.slice(0, 1).map((connector) => (
+                <Button
+                  key={connector.uid}
+                  onClick={() => connect({ connector })}
+                  size="lg"
+                >
+                  <Wallet className="w-5 h-5 mr-2" />
+                  Connect with {connector.name}
+                </Button>
+              ))}
+            </div>
+          )}
+
+          {/* Track list */}
+          {account.status === "connected" && (
+            <>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-2">Onchain Music</h2>
+                <p className="text-muted-foreground">
+                  {queue.length} track{queue.length !== 1 ? "s" : ""} on Base •
+                  Like tracks for 0.001 USDC • Tip your favorite artists
+                </p>
+              </div>
+
+              <TrackList
+                onLike={handleLike}
+                onTip={handleTip}
+                isLiking={likeTx.isPending}
+                isTipping={tipTx.isPending}
+              />
+            </>
+          )}
+        </div>
+      </main>
+
+      {/* Music player */}
+      {account.status === "connected" && (
+        <MusicPlayer
+          onLike={handleLike}
+          onTip={handleTip}
+          isLiking={likeTx.isPending}
+          isTipping={tipTx.isPending}
+        />
+      )}
+
+      {/* Tip dialog */}
+      <Dialog open={isTipDialogOpen} onOpenChange={setIsTipDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tip Artist</DialogTitle>
+            <DialogDescription>
+              Send USDC to support this artist. Your tip goes directly to the
+              creator.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Amount (USDC)</label>
+              <Input
+                type="number"
+                placeholder="1.00"
+                value={tipAmount}
+                onChange={(e) => setTipAmount(e.target.value)}
+                step="0.1"
+                min="0.1"
+              />
+              <p className="text-xs text-muted-foreground">
+                Your balance:{" "}
+                {usdcBalance ? formatUnits(usdcBalance, USDC.decimals) : "0"}{" "}
+                USDC
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsTipDialogOpen(false);
+                  setSelectedTrackForTip(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleTipSubmit}
+                disabled={tipTx.isPending || !tipAmount}
+              >
+                {tipTx.isPending ? "Sending..." : "Send Tip"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
