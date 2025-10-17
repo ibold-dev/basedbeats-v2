@@ -131,7 +131,7 @@ function TrackItem({
               "h-9 w-9 transition-opacity",
               isLiked
                 ? "opacity-100 text-red-500"
-                : "opacity-0 group-hover:opacity-100"
+                : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
             )}
             title={isLiked ? "Already liked" : "Like track"}
           >
@@ -146,7 +146,7 @@ function TrackItem({
               onTip(track.id);
             }}
             disabled={isTipping}
-            className="h-9 w-9 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="h-9 w-9 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
             title="Tip artist"
           >
             <DollarSign className="h-4 w-4" />

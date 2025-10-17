@@ -35,6 +35,7 @@ import { useUSDCWrite } from "@/hooks/useUSDC";
 import { useMusicStore, type Track } from "@/stores/useMusicStore";
 import { MusicPlayer } from "@/components/MusicPlayer";
 import { TrackList } from "@/components/TrackList";
+import { TransactionLoader } from "@/components/TransactionLoader";
 import { Music, Wallet, LogOut } from "lucide-react";
 import Image from "next/image";
 
@@ -361,12 +362,15 @@ function App() {
     );
   }, [universalAccount, faucetMutation, faucetEligibility]);
 
+  // Calculate pending transactions count
+  const pendingTxCount = [likeTx, tipTx].filter((tx) => tx.isPending).length;
+
   return (
     <div className="min-h-screen bg-background pb-32">
       {/* Header */}
       <header className="sticky top-0 z-40 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container flex h-16 items-center justify-between px-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 sm:gap-4">
             <div className="flex items-center justify-center w-10 h-10 rounded-full bg-[#0088ff] text-primary-foreground">
               {/* <Music className="w-5 h-5" /> */}
               <Image
@@ -382,6 +386,9 @@ function App() {
                 Onchain Music Streaming
               </p>
             </div>
+
+            {/* Transaction loader */}
+            <TransactionLoader count={pendingTxCount} />
           </div>
 
           {account.status === "connected" ? (
