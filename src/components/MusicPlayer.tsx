@@ -16,6 +16,8 @@ import {
   DollarSign,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useHasLiked } from "@/hooks/useBasedBeats";
+import { useAccount } from "wagmi";
 
 interface MusicPlayerProps {
   onLike?: (trackId: string) => void;
@@ -42,6 +44,17 @@ export function MusicPlayer({
     setVolume,
     updateCurrentTime,
   } = useMusicStore();
+
+  const { address } = useAccount();
+
+  // Check if user has liked the current track
+  const { data: hasLiked } = useHasLiked(
+    currentTrack ? BigInt(currentTrack.id) : 0n,
+    address!,
+    !!address && !!currentTrack
+  );
+
+  const isLiked = hasLiked || false;
 
   // Update current time regularly while playing
   useEffect(() => {
@@ -164,14 +177,12 @@ export function MusicPlayer({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => onLike?.(currentTrack.id)}
-              disabled={isLiking}
-              className={cn("h-9 w-9", currentTrack.likes && "text-red-500")}
-              title="Like track"
+              onClick={() => !isLiked && onLike?.(currentTrack.id)}
+              disabled={isLiking || isLiked}
+              className={cn("h-9 w-9", isLiked && "text-red-500")}
+              title={isLiked ? "Already liked" : "Like track"}
             >
-              <Heart
-                className={cn("h-5 w-5", currentTrack.likes && "fill-current")}
-              />
+              <Heart className={cn("h-5 w-5", isLiked && "fill-current")} />
             </Button>
 
             <Button

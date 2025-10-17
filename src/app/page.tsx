@@ -96,6 +96,18 @@ function App() {
   const { data: tracksDetails, refetch: refetchTrackDetails } =
     useGetTracksBatch(trackIds as bigint[], trackIds.length > 0);
 
+  // Check which tracks the user has liked
+  const likedTracks = useMemo(() => {
+    if (!universalAccount || !trackIds.length) return new Set<string>();
+
+    const likedSet = new Set<string>();
+    trackIds.forEach((trackId) => {
+      // We'll check this in the component using useHasLiked hook
+      likedSet.add(trackId.toString());
+    });
+    return likedSet;
+  }, [universalAccount, trackIds]);
+
   // Transaction hooks
   const likeTx = useBatchTransaction({
     onSuccess: () => {
@@ -129,6 +141,13 @@ function App() {
       });
     },
   });
+
+  // Auto-close tip modal when transaction starts processing
+  useEffect(() => {
+    if (tipTx.isPending) {
+      setIsTipDialogOpen(false);
+    }
+  }, [tipTx.isPending]);
 
   // Load tracks from contract - using a stable approach
   const [isLoadingTracks, setIsLoadingTracks] = useState(false);
@@ -468,6 +487,7 @@ function App() {
                 onTip={handleTip}
                 isLiking={likeTx.isPending}
                 isTipping={tipTx.isPending}
+                likedTracks={likedTracks}
               />
             </>
           )}
