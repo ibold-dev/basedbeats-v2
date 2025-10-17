@@ -7,7 +7,9 @@ export function getConfig() {
     chains: [baseSepolia],
     connectors: [
       baseAccount({
-        appName: "Sub Accounts Demo",
+        appName: "Based Beats",
+        appLogoUrl:
+          "https://raw.githubusercontent.com/ibold-dev/basedbeats-v2/refs/heads/main/public/logo.svg",
         subAccounts: {
           creation: "on-connect",
           defaultAccount: "sub",
