@@ -25,6 +25,8 @@ export interface MusicState {
   currentHowl: Howl | null;
   isShuffled: boolean;
   repeatMode: "none" | "one" | "all";
+  isLoading: boolean;
+  preloadedTracks: Map<string, Howl>;
 
   // Actions
   playTrack: (track: Track) => void;
@@ -40,6 +42,8 @@ export interface MusicState {
   updateCurrentTime: () => void;
   toggleShuffle: () => void;
   toggleRepeat: () => void;
+  preloadTrack: (track: Track) => void;
+  preloadNextTracks: () => void;
 }
 
 const useMusicStore = create<MusicState>((set, get) => ({
@@ -52,17 +56,50 @@ const useMusicStore = create<MusicState>((set, get) => ({
   currentHowl: null,
   isShuffled: false,
   repeatMode: "none",
+  isLoading: false,
+  preloadedTracks: new Map(),
 
   playTrack: (track: Track) => {
-    const { currentHowl } = get();
+    const { currentHowl, isLoading, preloadedTracks } = get();
+
+    // Prevent multiple simultaneous loads
+    if (isLoading) {
+      return;
+    }
 
     // Stop current track if playing
     if (currentHowl) {
       currentHowl.stop();
     }
 
+    // Check if track is already preloaded
+    const preloadedHowl = preloadedTracks.get(track.id);
+
+    if (preloadedHowl && track.audioUrl) {
+      // Use preloaded track - instant playback!
+      const actualDuration = preloadedHowl.duration();
+      const updatedTrack = {
+        ...track,
+        duration: actualDuration,
+      };
+
+      set({
+        currentTrack: updatedTrack,
+        isPlaying: true,
+        currentTime: 0,
+        currentIndex: get().queue.findIndex((t) => t.id === track.id),
+        currentHowl: preloadedHowl,
+        isLoading: false,
+      });
+
+      preloadedHowl.play();
+      return;
+    }
+
     // Create new Howl instance for the track
     if (track.audioUrl) {
+      set({ isLoading: true });
+
       const howl = new Howl({
         src: [track.audioUrl],
         volume: get().volume,
@@ -83,8 +120,13 @@ const useMusicStore = create<MusicState>((set, get) => ({
             currentTime: 0,
             currentIndex: get().queue.findIndex((t) => t.id === track.id),
             currentHowl: howl,
+            isLoading: false,
           });
           howl.play();
+        },
+        onloaderror: () => {
+          set({ isLoading: false });
+          console.error("Failed to load audio");
         },
         onplay: () => {
           set({ isPlaying: true });
@@ -119,6 +161,7 @@ const useMusicStore = create<MusicState>((set, get) => ({
         currentTime: 0,
         currentIndex: get().queue.findIndex((t) => t.id === track.id),
         currentHowl: null,
+        isLoading: false,
       });
     }
   },
@@ -172,7 +215,8 @@ const useMusicStore = create<MusicState>((set, get) => ({
   },
 
   nextTrack: () => {
-    const { queue, currentIndex, playTrack, repeatMode } = get();
+    const { queue, currentIndex, playTrack, repeatMode, preloadNextTracks } =
+      get();
 
     if (repeatMode === "one") {
       // If repeat one is on, just restart current track
@@ -186,10 +230,14 @@ const useMusicStore = create<MusicState>((set, get) => ({
     if (currentIndex < queue.length - 1) {
       const nextTrack = queue[currentIndex + 1];
       playTrack(nextTrack);
+      // Preload next tracks after playing
+      setTimeout(() => preloadNextTracks(), 1000);
     } else if (repeatMode === "all" && queue.length > 0) {
       // If repeat all is on and we're at the end, go to first track
       const firstTrack = queue[0];
       playTrack(firstTrack);
+      // Preload next tracks after playing
+      setTimeout(() => preloadNextTracks(), 1000);
     }
   },
 
@@ -217,19 +265,33 @@ const useMusicStore = create<MusicState>((set, get) => ({
 
   addToQueue: (tracks: Track[]) => {
     set({ queue: tracks });
+
+    // Start preloading the first few tracks
+    const tracksToPreload = tracks.slice(0, 3);
+    tracksToPreload.forEach((track) => {
+      get().preloadTrack(track);
+    });
   },
 
   clearQueue: () => {
-    const { currentHowl } = get();
+    const { currentHowl, preloadedTracks } = get();
     if (currentHowl) {
       currentHowl.stop();
     }
+
+    // Clean up preloaded tracks
+    preloadedTracks.forEach((howl) => {
+      howl.unload();
+    });
+
     set({
       queue: [],
       currentIndex: -1,
       currentTrack: null,
       isPlaying: false,
       currentHowl: null,
+      isLoading: false,
+      preloadedTracks: new Map(),
     });
   },
 
@@ -268,6 +330,42 @@ const useMusicStore = create<MusicState>((set, get) => ({
     const currentIndex = modes.indexOf(repeatMode);
     const nextMode = modes[(currentIndex + 1) % modes.length];
     set({ repeatMode: nextMode });
+  },
+
+  preloadTrack: (track: Track) => {
+    const { preloadedTracks } = get();
+
+    // Don't preload if already cached
+    if (preloadedTracks.has(track.id) || !track.audioUrl) {
+      return;
+    }
+
+    const howl = new Howl({
+      src: [track.audioUrl],
+      volume: 0, // Silent preload
+      html5: true,
+      preload: true,
+      onload: () => {
+        // Store the preloaded track
+        const newPreloadedTracks = new Map(preloadedTracks);
+        newPreloadedTracks.set(track.id, howl);
+        set({ preloadedTracks: newPreloadedTracks });
+        console.log(`Preloaded track: ${track.title}`);
+      },
+      onloaderror: () => {
+        console.error(`Failed to preload track: ${track.title}`);
+      },
+    });
+  },
+
+  preloadNextTracks: () => {
+    const { queue, currentIndex, preloadTrack } = get();
+
+    // Preload next 3 tracks
+    const tracksToPreload = queue.slice(currentIndex + 1, currentIndex + 4);
+    tracksToPreload.forEach((track) => {
+      preloadTrack(track);
+    });
   },
 }));
 

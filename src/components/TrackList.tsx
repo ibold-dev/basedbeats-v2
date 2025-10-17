@@ -164,12 +164,24 @@ export function TrackList({
   isLiking,
   isTipping,
 }: TrackListProps) {
-  const { queue, currentTrack, isPlaying, playTrack, pause, resume } =
-    useMusicStore();
+  const {
+    queue,
+    currentTrack,
+    isPlaying,
+    isLoading,
+    playTrack,
+    pause,
+    resume,
+  } = useMusicStore();
 
   const { address } = useAccount();
 
   const handleTrackClick = (track: any) => {
+    // Prevent clicks during loading
+    if (isLoading) {
+      return;
+    }
+
     if (currentTrack?.id === track.id) {
       if (isPlaying) {
         pause();

@@ -37,6 +37,7 @@ export function MusicPlayer({
     isPlaying,
     currentTime,
     volume,
+    isLoading,
     togglePlayPause,
     nextTrack,
     previousTrack,
@@ -145,6 +146,7 @@ export function MusicPlayer({
               size="icon"
               onClick={previousTrack}
               className="h-9 w-9"
+              disabled={isLoading}
             >
               <SkipBack className="h-5 w-5" />
             </Button>
@@ -154,8 +156,11 @@ export function MusicPlayer({
               size="icon"
               onClick={togglePlayPause}
               className="h-11 w-11 rounded-full"
+              disabled={isLoading}
             >
-              {isPlaying ? (
+              {isLoading ? (
+                <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : isPlaying ? (
                 <Pause className="h-5 w-5" />
               ) : (
                 <Play className="h-5 w-5 ml-0.5" />
@@ -167,6 +172,7 @@ export function MusicPlayer({
               size="icon"
               onClick={nextTrack}
               className="h-9 w-9"
+              disabled={isLoading}
             >
               <SkipForward className="h-5 w-5" />
             </Button>
