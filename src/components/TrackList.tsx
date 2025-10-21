@@ -74,7 +74,7 @@ function TrackItem({
               "absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity",
               isCurrentTrack
                 ? "opacity-100"
-                : "opacity-0 group-hover:opacity-100"
+                : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
             )}
           >
             {isCurrentTrack && isPlaying ? (
